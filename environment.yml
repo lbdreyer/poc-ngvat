@@ -1,0 +1,7 @@
+name: poc_pyvista
+channels:
+  - conda-forge
+dependencies:
+  - pyvista
+  - matplotlib
+  - itkwidgets
