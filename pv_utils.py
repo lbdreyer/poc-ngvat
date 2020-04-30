@@ -1,5 +1,7 @@
 import os
 
+import cartopy
+import cartopy.io.shapereader as shp
 import netCDF4 as nc
 import numpy as np
 import pyvista as pv
@@ -101,60 +103,53 @@ def mesh_from_nc(fname='qrclim.sst.ugrid.nc', data_type='real', which='new'):
     return mesh
 
 
-def project_mesh(mesh, proj_name='moll'):
+class PolydataTransformFilter:
+    def __init__(self, proj_name='moll'):
+        # Set up source and target projection
+        sourceProjection = vtk.vtkGeoProjection()
+        destinationProjection = vtk.vtkGeoProjection()
+        destinationProjection.SetName(proj_name)
+
+        # Set up transform between source and target.
+        transformProjection = vtk.vtkGeoTransform()
+        transformProjection.SetSourceProjection(sourceProjection)
+        transformProjection.SetDestinationProjection(destinationProjection)
+
+        # Set up transform filter
+        transform_filter = vtk.vtkTransformPolyDataFilter()
+        transform_filter.SetTransform(transformProjection)
+        
+        self.transform_filter = transform_filter
+    
+    def transform(self, mesh):
+        self.transform_filter.SetInputData(mesh)
+        self.transform_filter.Update()
+        output = self.transform_filter.GetOutput()
+        
+        # Wrap output of transform as a Pyvista object.
+        return pv.wrap(output)
+
+
+def get_coastlines(resolution="110m"):
     """
-    Returns the input mesh, reprojecte into the target projection, proj_name
-    
-    Note currently this uses two workarounds that should be fixed at some point
-    1) I was unsure how to get hold of the low-level vtkPolyData object from the
-       pyvista.PolyData object, so currently I save it out to a .vtk file, then
-       load it back in using vtk directly.
-    2) 
-    
+    Modified version of 
+    https://github.com/bjlittle/poc-ngvat/blob/master/poc-3/utils.py
     """
-    fname = 'temp.vtk'
-    
-    mesh.save(fname)
-    
-    reader = vtk.vtkPolyDataReader()
-    reader.SetFileName(fname)
-    reader.ReadAllScalarsOn()
-    output = reader.GetOutputPort()
+    fname = shp.natural_earth(resolution=resolution, category="physical", name="coastline")
+    reader = shp.Reader(fname)
 
-    # Set up source and target projection
-    sourceProjection = vtk.vtkGeoProjection()
-    destinationProjection = vtk.vtkGeoProjection()
-    destinationProjection.SetName(proj_name)
-    
-    # Set up transform between source and target.
-    transformProjection = vtk.vtkGeoTransform()
-    transformProjection.SetSourceProjection(sourceProjection)
-    transformProjection.SetDestinationProjection(destinationProjection)
+    dtype = np.float32
+    blocks = pv.MultiBlock()
 
-    # Set up transform filter
-    transformGraticle = vtk.vtkTransformPolyDataFilter()
-    transformGraticle.SetInputConnection(output)
-    transformGraticle.SetTransform(transformProjection)
+    for i, record in enumerate(reader.records()):
+        for geometry in record.geometry:
+            xy = np.array(geometry.coords[:], dtype=dtype)
+            x = xy[:,0].reshape(-1, 1)
+            y = xy[:,1].reshape(-1, 1)
+            z = np.zeros_like(x)
 
-    # Plot it vtk first to get it working. TODO: skip this?
-    result = transformGraticle.GetOutputPort()
-    mapper = vtk.vtkPolyDataMapper()
-    mapper.SetInputConnection(result)
-    actor = vtk.vtkActor()
-    actor.SetMapper(mapper)
-    actor.GetProperty().EdgeVisibilityOn()
-    ren = vtk.vtkRenderer()
-    ren.AddActor(actor)
-    iren = vtk.vtkRenderWindowInteractor()
-    renWin = vtk.vtkRenderWindow()
-    renWin.AddRenderer(ren)
-    renWin.SetInteractor(iren)
-    iren.Initialize()
-    renWin.Render()
-    del renWin
-    del iren
+            xyz = np.hstack((x, y, z))
+            poly = pv.lines_from_points(xyz, close=False)
+            blocks.append(poly)
 
-    # Wrap output of transform as a Pyvista object.
-    proj_mesh = pv.wrap(transformGraticle.GetOutput())
-    
-    return proj_mesh
+    return blocks
